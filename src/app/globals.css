@@ -1,0 +1,111 @@
+@import "tailwindcss";
+
+/* ---------------------------------------------------------------------------
+ * Palette. Declaring these inside @theme is what makes `bg-brand-500`,
+ * `text-brand-200`, `ring-brand-400/60` etc. real utilities — Tailwind v4 has
+ * no JS config file, the theme *is* these custom properties.
+ * ------------------------------------------------------------------------- */
+@theme {
+  --color-brand-100: oklch(0.93 0.04 285);
+  --color-brand-200: oklch(0.87 0.07 285);
+  --color-brand-300: oklch(0.78 0.11 285);
+  --color-brand-400: oklch(0.68 0.16 283);
+  --color-brand-500: oklch(0.6 0.19 281);
+  --color-brand-600: oklch(0.52 0.19 280);
+
+  /* Semantic aliases for the three surfaces the shell is built from. */
+  --color-canvas: oklch(0.15 0.005 285);
+  --color-panel: oklch(0.2 0.006 285);
+  --color-edge: oklch(0.28 0.008 285);
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial,
+    "Apple Color Emoji", "Segoe UI Emoji";
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    @apply bg-neutral-950 text-neutral-100 antialiased;
+    font-family: var(--font-sans);
+  }
+
+  ::selection {
+    background-color: color-mix(in oklch, var(--color-brand-500) 45%, transparent);
+  }
+
+  /* Native controls render a light-on-light dropdown list without this. */
+  :root {
+    color-scheme: dark;
+  }
+}
+
+/* Thin, low-contrast scrollbar for the message list and other inner panes. It
+ * only appears on hover so a long transcript stays visually quiet. */
+@utility scrollbar-thin {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-neutral-700) transparent;
+
+  &::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  &::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    background-color: var(--color-neutral-800);
+    border-radius: 9999px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+
+  &:hover::-webkit-scrollbar-thumb {
+    background-color: var(--color-neutral-700);
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * "prose-ish" rendering for Claude's output.
+ *
+ * Claude replies in markdown-flavoured text but we deliberately do NOT parse or
+ * inject it as HTML — rendering model output through dangerouslySetInnerHTML
+ * would turn a prompt injection into stored XSS. So the text is printed
+ * verbatim as a text node and these rules only restore the *typography* of
+ * plain text: hard wraps, preserved indentation, readable measure.
+ * ------------------------------------------------------------------------- */
+@utility prose-plain {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: normal;
+  tab-size: 2;
+  line-height: 1.65;
+  font-variant-ligatures: none;
+}
+
+/* Same idea, one notch tighter — for previews and queued contributions. */
+@utility prose-plain-compact {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+  font-size: 0.8125rem;
+}
+
+/* Fenced code blocks in Claude's output stay plain text, but a monospace face
+ * and a horizontal scroll keep long lines from stretching the column. */
+@utility prose-code {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  white-space: pre;
+  overflow-x: auto;
+}
+
+/* Clamp a paragraph to a comfortable measure without fighting flexbox. */
+@utility prose-measure {
+  max-width: 72ch;
+}

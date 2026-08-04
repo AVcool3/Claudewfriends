@@ -17,6 +17,7 @@ import { useRouter } from 'next/navigation'
 import AccessPanel from '@/components/access/AccessPanel'
 import ChatArea from '@/components/chat/ChatArea'
 import RoomSettings from '@/components/sidebar/RoomSettings'
+import { RepoPanel } from '@/components/repo/RepoPanel'
 import type { Capability } from '@/lib/permissions'
 import type {
   InvitationSummary,
@@ -97,8 +98,9 @@ export function RoomWorkspace({
          * open, so its own branch for this panel is unreachable. It is rendered
          * here — with the room in hand — instead of nowhere.
          */}
-        <div className="border-l border-neutral-800 bg-neutral-900">
+        <div className="max-h-[55%] overflow-y-auto border-l border-neutral-800 bg-neutral-900">
           <RoomSettings room={room} capabilities={capabilities} />
+          <RepoPanel roomId={room.id} capabilities={capabilities} />
         </div>
 
         <AccessPanel

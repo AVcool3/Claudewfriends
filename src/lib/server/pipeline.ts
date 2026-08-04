@@ -23,8 +23,15 @@ import 'server-only'
  * both have approved; a failure in either one never reaches the Anthropic API.
  */
 
-import { ClaudeError, runClaudeTurn } from '@/lib/claude/client'
+import { ClaudeError, runClaudeToolTurn, runClaudeTurn } from '@/lib/claude/client'
 import type { ClaudeTurnResult } from '@/lib/claude/client'
+import {
+  MAX_REPO_TOOL_CALLS_PER_TURN,
+  executeRepoTool,
+  repoSystemNote,
+  repoToolsFor,
+} from '@/lib/github/tools'
+import type { RepoToolContext } from '@/lib/github/tools'
 import {
   buildClaudeRequest,
   buildStructuredContribution,
@@ -54,6 +61,7 @@ import type {
   Message,
   MessageWithSender,
   Profile,
+  RepoConnection,
   Role,
   RoomMember,
   SenderType,
@@ -447,22 +455,57 @@ interface DispatchResult {
   warnings: ValidationIssue[]
 }
 
+/**
+ * The room's repository binding, or null when none is connected.
+ *
+ * Service-role read: membership was already settled by `validateSecurity`, and
+ * this runs inside the turn where a user-scoped read would only re-prove what
+ * step 2 proved.
+ */
+async function loadRepoConnection(roomId: string): Promise<RepoConnection | null> {
+  const admin = createAdminClient()
+  const { data, error } = await admin
+    .from('repo_connections')
+    .select('*')
+    .eq('room_id', roomId)
+    .maybeSingle<RepoConnection>()
+
+  if (error) {
+    // A broken lookup downgrades the turn to no-repo rather than failing it:
+    // the conversation is still worth having without the tools.
+    console.error('[pipeline] repo connection lookup failed', { roomId, message: error.message })
+    return null
+  }
+  return data
+}
+
 async function dispatchToClaude(args: {
   roomId: string
   roomName: string
   actorId: string
+  /** True when the user whose action triggered this turn owns the room. */
+  actorIsCorePrompter: boolean
+  /** The stored message that triggered the turn, for the repo action record. */
+  triggerMessageId: string | null
   transcript: TranscriptContext
   /** Structured contribution blocks, in the order they should reach Claude. */
   blocks: string[]
 }): Promise<ValidationResult<DispatchResult>> {
   const warnings: ValidationIssue[] = []
 
+  const repoConnection = await loadRepoConnection(args.roomId)
+
   // ---- 6. add conversation context --------------------------------------
-  const system = buildSystemPrompt({
+  const baseSystem = buildSystemPrompt({
     roomName: args.roomName,
     corePrompterName: args.transcript.corePrompterName,
     participants: args.transcript.participants,
   })
+  // The repo note is appended to the frozen prompt rather than woven into it,
+  // so rooms without a connection keep a byte-identical system prompt.
+  const system = repoConnection
+    ? `${baseSystem}\n\n${repoSystemNote(repoConnection, args.actorIsCorePrompter)}`
+    : baseSystem
 
   const request = appendUserTurn(
     buildClaudeRequest({
@@ -507,12 +550,31 @@ async function dispatchToClaude(args: {
 
   let turn: ClaudeTurnResult
   try {
-    // Retries cover transient failures only — a refused or malformed request
-    // would fail identically every time, and re-sending a contribution the API
-    // already rejected is worse than reporting it.
-    turn = await withRetry('claude.turn', () => runClaudeTurn(verifiedRequest), {
-      retryable: retryableClaudeFailure,
-    })
+    if (repoConnection) {
+      const toolCtx: RepoToolContext = {
+        connection: repoConnection,
+        roomId: args.roomId,
+        messageId: args.triggerMessageId,
+        actorId: args.actorId,
+        actorIsCorePrompter: args.actorIsCorePrompter,
+      }
+      // No withRetry around the tool loop: a turn that already opened a pull
+      // request must not run twice, and the loop cannot tell a pre-PR failure
+      // from a post-PR one. One attempt, honestly reported, is the safe shape.
+      turn = await runClaudeToolTurn({
+        request: verifiedRequest,
+        tools: repoToolsFor(repoConnection.access_mode, args.actorIsCorePrompter),
+        execute: (name, input) => executeRepoTool(toolCtx, name, input),
+        maxToolCalls: MAX_REPO_TOOL_CALLS_PER_TURN,
+      })
+    } else {
+      // Retries cover transient failures only — a refused or malformed request
+      // would fail identically every time, and re-sending a contribution the API
+      // already rejected is worse than reporting it.
+      turn = await withRetry('claude.turn', () => runClaudeTurn(verifiedRequest), {
+        retryable: retryableClaudeFailure,
+      })
+    }
   } catch (cause) {
     const failure =
       cause instanceof ClaudeError
@@ -830,6 +892,8 @@ export async function submitContribution(args: {
     roomId: ctx.room.id,
     roomName: ctx.room.name,
     actorId: ctx.user.id,
+    actorIsCorePrompter: ctx.membership.role === 'core_prompter',
+    triggerMessageId: message.id,
     transcript,
     blocks: [contribution],
   })
@@ -936,6 +1000,16 @@ export async function approveAndSend(args: {
     roomId: ctx.room.id,
     roomName: ctx.room.name,
     actorId: ctx.user.id,
+    /*
+     * Deliberately false even though the approver is the Core Prompter.
+     * Approval vets what reaches Claude, not what Claude may do: the text
+     * driving this turn was authored by a collaborator, and an injected "open
+     * a pull request" the owner failed to spot must not become a branch on
+     * their repository. Write access requires a turn the owner *wrote*, not
+     * one they waved through.
+     */
+    actorIsCorePrompter: false,
+    triggerMessageId: row.id,
     transcript,
     blocks: [contribution],
   })
@@ -1083,6 +1157,10 @@ export async function combineAndSend(args: {
     roomId: ctx.room.id,
     roomName: ctx.room.name,
     actorId: ctx.user.id,
+    // Same rule as a single approval: the combined blocks are collaborator
+    // text, so the turn runs without write tools no matter who pressed send.
+    actorIsCorePrompter: false,
+    triggerMessageId: orderedRows[orderedRows.length - 1]?.id ?? null,
     transcript,
     blocks,
   })

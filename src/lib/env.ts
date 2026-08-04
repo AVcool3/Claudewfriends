@@ -60,4 +60,36 @@ export const serverEnv = {
     }
     return 'high'
   },
+
+  // --- GitHub App -----------------------------------------------------------
+  // The app authenticates as an *installation*, never as a user: a signed JWT is
+  // exchanged for a token that lives one hour and reaches only the repositories
+  // the installer selected. Nothing long-lived is persisted, so revoking access
+  // in GitHub's UI takes effect within the hour with no cleanup on our side.
+  get githubAppId(): string {
+    assertServer('GITHUB_APP_ID')
+    return required('GITHUB_APP_ID', process.env.GITHUB_APP_ID)
+  },
+  get githubAppPrivateKey(): string {
+    assertServer('GITHUB_APP_PRIVATE_KEY')
+    const raw = required('GITHUB_APP_PRIVATE_KEY', process.env.GITHUB_APP_PRIVATE_KEY)
+    // Accepted either as a real PEM (newlines intact), as a PEM with the
+    // newlines escaped — which is what most secret managers and .env files do —
+    // or base64-encoded, because a PEM pasted into some dashboards loses its
+    // line structure entirely.
+    if (raw.includes('-----BEGIN')) return raw.replace(/\\n/g, '\n')
+    return Buffer.from(raw, 'base64').toString('utf8')
+  },
+  /** The app's URL slug, used to build the "Install / Configure" link. */
+  get githubAppSlug(): string {
+    assertServer('GITHUB_APP_SLUG')
+    return required('GITHUB_APP_SLUG', process.env.GITHUB_APP_SLUG)
+  },
+  /** True when the GitHub integration is configured at all. Never throws. */
+  get githubConfigured(): boolean {
+    if (typeof window !== 'undefined') return false
+    return Boolean(
+      process.env.GITHUB_APP_ID && process.env.GITHUB_APP_PRIVATE_KEY && process.env.GITHUB_APP_SLUG,
+    )
+  },
 }

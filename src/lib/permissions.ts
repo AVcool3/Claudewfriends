@@ -22,6 +22,9 @@ export type Capability =
   | 'room.toggle_messaging'
   | 'room.approve_message'
   | 'room.configure_claude'
+  | 'room.connect_repo'
+  | 'room.repo_read'
+  | 'room.repo_write'
 
 const ROLE_RANK: Record<Role, number> = {
   core_prompter: 3,
@@ -112,6 +115,30 @@ export function can(
     case 'room.configure_claude':
       return isCore
 
+    // Connecting a repository binds someone else's GitHub installation to this
+    // room, so it is the owner's decision alone — an administrator manages
+    // people, not the code the room can reach.
+    case 'room.connect_repo':
+      return isCore
+
+    // Reading follows the ability to contribute: whoever can put a message in
+    // front of Claude can cause it to look at the repository, so gating reads
+    // any tighter would be theatre.
+    case 'room.repo_read':
+      return can('room.send_message', membership, room)
+
+    /*
+     * Writes are the Core Prompter's alone, in every collaboration mode.
+     *
+     * A collaborator's text reaches Claude as data, but it still steers what
+     * Claude decides to do. If a collaborator could cause a pull request, a
+     * successful prompt injection would end in a branch pushed to the owner's
+     * repository. Approval mode does not close that gap either — it gates which
+     * *messages* reach Claude, not what Claude does once one has.
+     */
+    case 'room.repo_write':
+      return isCore
+
     default:
       return false
   }
@@ -133,6 +160,13 @@ export function denialReason(
     if (!room.allowCollaboratorMessages) {
       return 'The Core Prompter has paused collaborator messages.'
     }
+  }
+
+  if (capability === 'room.connect_repo') {
+    return 'Only the Core Prompter can connect or change this room\'s repository.'
+  }
+  if (capability === 'room.repo_write') {
+    return 'Only the Core Prompter can open pull requests from this room.'
   }
 
   return 'You do not have permission to perform this action.'
@@ -214,6 +248,9 @@ export function capabilitySet(
     'room.toggle_messaging',
     'room.approve_message',
     'room.configure_claude',
+    'room.connect_repo',
+    'room.repo_read',
+    'room.repo_write',
   ]
   return capabilities.reduce(
     (acc, capability) => {

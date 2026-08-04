@@ -11,6 +11,8 @@ import type {
   ClaudeConversationState,
   CollaborationMode,
   MemberStatus,
+  RepoAccessMode,
+  RepoTool,
   Role,
   SenderType,
 } from './types'
@@ -186,6 +188,88 @@ export interface Database {
           updated_at?: string
         }
       }
+      github_installations: {
+        Row: {
+          id: string
+          installation_id: number
+          account_login: string
+          account_type: string
+          installed_by: string
+          suspended_at: string | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          installation_id: number
+          account_login: string
+          account_type?: string
+          installed_by: string
+          suspended_at?: string | null
+        }
+        Update: {
+          account_login?: string
+          account_type?: string
+          suspended_at?: string | null
+        }
+      }
+      repo_connections: {
+        Row: {
+          id: string
+          room_id: string
+          installation_id: number
+          owner: string
+          repo: string
+          default_branch: string
+          access_mode: RepoAccessMode
+          connected_by: string
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          room_id: string
+          installation_id: number
+          owner: string
+          repo: string
+          default_branch?: string
+          access_mode?: RepoAccessMode
+          connected_by: string
+        }
+        Update: {
+          installation_id?: number
+          owner?: string
+          repo?: string
+          default_branch?: string
+          access_mode?: RepoAccessMode
+          updated_at?: string
+        }
+      }
+      repo_actions: {
+        Row: {
+          id: string
+          room_id: string
+          message_id: string | null
+          actor_id: string | null
+          tool: RepoTool
+          arguments: Json
+          ok: boolean
+          summary: string
+          pull_request_url: string | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          room_id: string
+          message_id?: string | null
+          actor_id?: string | null
+          tool: RepoTool
+          arguments?: Json
+          ok?: boolean
+          summary?: string
+          pull_request_url?: string | null
+        }
+        Update: never
+      }
       audit_logs: {
         Row: {
           id: string
@@ -241,6 +325,7 @@ export interface Database {
       collaboration_mode: CollaborationMode
       sender_type: SenderType
       approval_status: ApprovalStatus
+      repo_access_mode: RepoAccessMode
     }
   }
 }

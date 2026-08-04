@@ -264,3 +264,130 @@ export async function runClaudeTurn(request: ClaudeRequestShape): Promise<Claude
 
   return { text, stopReason, model: message.model, ...usage }
 }
+
+// ---------------------------------------------------------------------------
+// Tool-use loop
+// ---------------------------------------------------------------------------
+
+/** A tool executor supplied by the caller. Must not throw — return is_error. */
+export type ToolExecutor = (
+  name: string,
+  input: unknown,
+) => Promise<{ content: string; isError: boolean }>
+
+export interface ClaudeToolTurnArgs {
+  request: ClaudeRequestShape
+  tools: Anthropic.Tool[]
+  execute: ToolExecutor
+  /** Hard cap on tool calls across the whole turn. */
+  maxToolCalls: number
+}
+
+type LoopStreamParams = AdaptiveStreamParams & { tools: Anthropic.Tool[] }
+
+/**
+ * Runs one conversational turn with tools, looping until Claude stops asking.
+ *
+ * The manual loop (rather than the SDK's beta tool runner) is deliberate: the
+ * executor needs to keep running under the caller's permission context, the
+ * loop needs a hard cap on total tool calls, and the transcript persisted to
+ * the room is the *text*, not the tool blocks — the tool activity is recorded
+ * separately in repo_actions. Thinking blocks are echoed back unchanged each
+ * iteration, as the API requires when continuing the same turn.
+ */
+export async function runClaudeToolTurn(args: ClaudeToolTurnArgs): Promise<ClaudeTurnResult> {
+  if (args.request.messages.length === 0) {
+    throw new ClaudeError('invalid_request', 'There is nothing to send to Claude.')
+  }
+
+  // The running transcript for this turn, in API block form. Starts from the
+  // caller's string-content history and grows tool_use / tool_result pairs.
+  const messages: Anthropic.MessageParam[] = args.request.messages.map((message) => ({
+    role: message.role,
+    content: message.content,
+  }))
+
+  let inputTokens = 0
+  let outputTokens = 0
+  let toolCallsUsed = 0
+  let model = args.request.model
+
+  // Generous upper bound on iterations; the real budget is maxToolCalls. Each
+  // iteration is one API round trip that may carry several parallel tool calls.
+  for (let iteration = 0; iteration < 24; iteration += 1) {
+    const params: LoopStreamParams = {
+      model: args.request.model,
+      max_tokens: args.request.maxTokens,
+      system: args.request.system,
+      messages,
+      tools: args.tools,
+      thinking: { type: 'adaptive' },
+      output_config: { effort: serverEnv.claudeEffort },
+    }
+
+    let message: Anthropic.Message
+    try {
+      message = await getClient()
+        .messages.stream(params as unknown as Anthropic.MessageStreamParams)
+        .finalMessage()
+    } catch (error) {
+      throw toClaudeError(error)
+    }
+
+    inputTokens += message.usage.input_tokens
+    outputTokens += message.usage.output_tokens
+    model = message.model
+
+    if (message.stop_reason === 'refusal') {
+      return { text: '', stopReason: 'refusal', model, inputTokens, outputTokens }
+    }
+
+    const toolUses = message.content.filter(
+      (block): block is Anthropic.ToolUseBlock => block.type === 'tool_use',
+    )
+
+    if (message.stop_reason !== 'tool_use' || toolUses.length === 0) {
+      const text = message.content
+        .filter((block): block is Anthropic.TextBlock => block.type === 'text')
+        .map((block) => block.text)
+        .join('\n\n')
+        .trim()
+      return { text, stopReason: message.stop_reason, model, inputTokens, outputTokens }
+    }
+
+    // Echo the assistant turn back verbatim — thinking blocks included, which
+    // the API requires when continuing a turn on the same model.
+    messages.push({ role: 'assistant', content: message.content })
+
+    // Every tool_use gets exactly one tool_result, all in a single user turn;
+    // dropping one is an API error, so over-budget calls are answered with a
+    // refusal result instead of being skipped.
+    const results: Anthropic.ToolResultBlockParam[] = []
+    for (const toolUse of toolUses) {
+      if (toolCallsUsed >= args.maxToolCalls) {
+        results.push({
+          type: 'tool_result',
+          tool_use_id: toolUse.id,
+          content:
+            'Tool budget for this turn is exhausted. Answer with what you have gathered so far.',
+          is_error: true,
+        })
+        continue
+      }
+      toolCallsUsed += 1
+      const outcome = await args.execute(toolUse.name, toolUse.input)
+      results.push({
+        type: 'tool_result',
+        tool_use_id: toolUse.id,
+        content: outcome.content,
+        is_error: outcome.isError,
+      })
+    }
+    messages.push({ role: 'user', content: results })
+  }
+
+  throw new ClaudeError(
+    'invalid_request',
+    'The tool loop did not settle. The reply was abandoned rather than left running.',
+  )
+}

@@ -34,10 +34,20 @@ Against a local stack instead: `supabase start && supabase db reset`.
 
 **Without the CLI**
 
-Open *SQL Editor → New query* in the dashboard, paste the entire contents of
-`supabase/migrations/0001_init.sql`, and run it. Do this as the default
-`postgres` role — the migration attaches a trigger to `auth.users`, which a
-lesser role may not do.
+Open *SQL Editor → New query* in the dashboard and run the migrations **in
+order, as separate queries**:
+
+1. `supabase/migrations/0001_init.sql` — rooms, membership, messages, RLS.
+2. `supabase/migrations/0002_github.sql` — GitHub App installations, the room →
+   repository binding, and repository action logging.
+
+`0002` depends on `0001` (it reuses `is_active_member`, `is_room_owner` and
+`touch_updated_at`), so running it first will fail. It is optional: skip it and
+the app runs without the repository feature, showing "GitHub is not configured"
+in the repository panel.
+
+Run both as the default `postgres` role — `0001` attaches a trigger to
+`auth.users`, which a lesser role may not do.
 
 If you see `WARNING: Could not attach on_auth_user_created to auth.users`, the
 schema is fine but new signups will not get a `profiles` row. Re-run just that
@@ -54,6 +64,12 @@ Copy `.env.example` to `.env.local` and fill it in:
 | `NEXT_PUBLIC_SITE_URL` | e.g. `http://localhost:3000` | yes |
 | `SUPABASE_SERVICE_ROLE_KEY` | Project settings → API → `service_role` | **never** |
 | `ANTHROPIC_API_KEY` | console.anthropic.com | **never** |
+| `GITHUB_APP_ID` | GitHub App → General → App ID (optional) | **never** |
+| `GITHUB_APP_SLUG` | the app's URL slug (optional) | **never** |
+| `GITHUB_APP_PRIVATE_KEY` | GitHub App → Generate a private key (optional) | **never** |
+
+The three `GITHUB_APP_*` variables are only needed for the repository feature.
+Leave them unset and everything else works unchanged.
 
 The two secrets are read only through `serverEnv` in `src/lib/env.ts`, which
 throws if it is ever evaluated in a browser bundle. The service-role key
@@ -67,6 +83,24 @@ bypasses RLS entirely — treat it as a database password.
 - Enable **Confirm email** for password signups (recommended).
 - Magic links are part of the same provider: leave *Enable email OTP / magic
   link* on. The login page offers both password and magic link.
+
+*Authentication → Providers → GitHub* (optional)
+
+Enabling this adds the "Continue with GitHub" button to the login page. It is
+independent of the GitHub **App** used for repository access — this one is an
+OAuth app, and Supabase holds its client secret, so the deployment needs no
+extra env var for it.
+
+- Create an OAuth app at *GitHub → Settings → Developer settings → OAuth Apps*.
+- Set its **Authorization callback URL** to
+  `https://<your-project>.supabase.co/auth/v1/callback` — Supabase's callback,
+  not the app's.
+- Paste the client id and secret into the Supabase provider form.
+
+Note for invited users: an invitation binds to an email address, and GitHub
+sign-in yields whichever address GitHub exposes. Someone invited at their work
+address who signs in with a GitHub account registered to a personal one ends up
+with a second account that holds no invitation.
 
 *Authentication → URL Configuration*
 

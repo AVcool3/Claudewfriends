@@ -10,6 +10,21 @@ function isPublicPath(pathname: string) {
 }
 
 /**
+ * API routes still get their session cookie refreshed, but must never be
+ * redirected.
+ *
+ * `fetch` follows redirects transparently, so a 307 to /login turns an expired
+ * session into a 200 carrying an HTML login page. `response.ok` is then true
+ * and the caller parses markup as JSON — surfacing as "the server did not
+ * return an id" rather than "you are signed out". Letting the request through
+ * lets the route's own `requireUser` / `loadRoomContext` answer 401 in the
+ * shape the client already knows how to read.
+ */
+function isApiPath(pathname: string) {
+  return pathname === '/api' || pathname.startsWith('/api/')
+}
+
+/**
  * Refreshes the Supabase auth cookie on every request and bounces
  * unauthenticated visitors to /login. This is a convenience redirect, not the
  * security boundary — Row Level Security still governs every row.
@@ -45,7 +60,7 @@ export async function updateSession(request: NextRequest) {
 
   const { pathname, search } = request.nextUrl
 
-  if (!user && !isPublicPath(pathname)) {
+  if (!user && !isApiPath(pathname) && !isPublicPath(pathname)) {
     const url = request.nextUrl.clone()
     url.pathname = '/login'
     url.search = ''
